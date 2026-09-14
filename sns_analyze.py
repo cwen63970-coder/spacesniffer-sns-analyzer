@@ -377,44 +377,6 @@ def render_tree(snap, min_bytes, max_depth=0, dirs_only=False, max_nodes=0, lang
     return '\n'.join(L)
 
 
-def render_tree_json(snap, min_bytes, max_depth=0, dirs_only=False, max_nodes=0):
-    """Nested JSON tree (LLM/script friendly). Each node has name, size (bytes),
-    size_h (human), type; children are sorted largest-first.
-    max_nodes caps total nodes to keep the file small enough for LLM contexts."""
-    root_path = norm_path([snap.root_name or 'C:'])
-    used = snap.root_log - (snap.free_log or 0)
-    counter = [0]
-
-    def node(name, log, isdir, path, depth):
-        if max_nodes and counter[0] >= max_nodes:
-            return None
-        counter[0] += 1
-        n = {'name': name, 'size': log, 'size_h': fmt_size(log),
-             'type': 'dir' if isdir else 'file'}
-        if isdir:
-            n['children'] = []
-            if (not max_depth or depth < max_depth) and (depth == 0 or log >= min_bytes):
-                kids = (snap.top_level if depth == 0
-                        else snap.dir_children.get(path, []))
-                for kname, klog, kdisk, kdir in sorted(kids, key=lambda x: (-x[1], x[0])):
-                    if not kdir and (dirs_only or klog < min_bytes):
-                        continue
-                    ch = node(kname, klog, kdir, path + '\\' + kname, depth + 1)
-                    if ch is not None:
-                        n['children'].append(ch)
-        return n
-
-    return {
-        'drive': snap.root_name or 'C:\\',
-        'capacity': snap.root_log,
-        'free': snap.free_log or 0,
-        'used': used,
-        'files': snap.n_files,
-        'dirs': snap.n_dirs,
-        'tree': node(snap.root_name or 'C:\\', snap.root_log, True, root_path, 0),
-    }
-
-
 def render_tree_md(snap, min_bytes, max_depth=0, dirs_only=False, max_nodes=0):
     """Markdown nested-list tree: easy to paste into chat/LLM tools."""
     L = ['# 磁盘文件树（按大小排序，最大在前）', '']
@@ -462,8 +424,6 @@ def main():
                     help='dirs >= N MiB are expanded in the tree and listed in dirs.csv (default 128)')
     ap.add_argument('--tree', default=None, metavar='PATH',
                     help='write a hierarchical text tree (with sizes) to PATH')
-    ap.add_argument('--tree-json', default=None, metavar='PATH',
-                    help='write a nested JSON tree (LLM/script friendly) to PATH')
     ap.add_argument('--tree-md', default=None, metavar='PATH',
                     help='write a Markdown nested-list tree to PATH')
     ap.add_argument('--depth', type=int, default=0,
@@ -511,13 +471,6 @@ def main():
         with open(tp, 'w', encoding='utf-8') as fh:
             fh.write(tree + '\n')
         print(f'  wrote tree ({len(tree.splitlines()):,} lines) -> {tp}')
-
-    if args.tree_json:
-        tj = json.dumps(render_tree_json(snap, *common), ensure_ascii=False, indent=1)
-        tp = out_path(args.tree_json)
-        with open(tp, 'w', encoding='utf-8') as fh:
-            fh.write(tj)
-        print(f'  wrote tree-json ({len(tj.splitlines()):,} lines) -> {tp}')
 
     if args.tree_md:
         tm = render_tree_md(snap, *common)
