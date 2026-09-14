@@ -7,7 +7,7 @@ Writes a valid SpaceSniffer snapshot (community-documented layout) so that
 sns_analyze.py can be exercised without a real multi-GB export:
 
     python make_example.py example.sns
-    python sns_analyze.py example.sns --output out --lang en
+    python sns_analyze.py example.sns -o out --tree tree.txt --tree-md tree.md --min 1
 """
 
 import base64

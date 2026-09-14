@@ -1,6 +1,6 @@
 # sns-analyzer · SpaceSniffer 快照分析器
 
-解析 SpaceSniffer 导出的 `.sns` 二进制快照，输出磁盘空间分析报告（Markdown + CSV + JSON）。
+解析 SpaceSniffer 导出的 `.sns` 二进制快照，输出**层级文件树**（文本 / Markdown）与 CSV 统计、可选 Markdown 报告。
 零第三方依赖（Python 3.8+ 标准库），单文件脚本。
 
 > **官方有没有分析工具？没有。** SpaceSniffer（作者 Umberto Uderzo）是免费软件，官网只提供 GUI 使用说明，

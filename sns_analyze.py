@@ -19,11 +19,13 @@ Verified record layout (little-endian):
 
 Usage:
     python sns_analyze.py snapshot.sns --tree tree.txt --depth 8 --min 128
+    python sns_analyze.py snapshot.sns --tree-md tree.md --max-nodes 2500   # LLM-friendly
     python sns_analyze.py snapshot.sns --dirs-only --tree tree.txt --json
     python sns_analyze.py snapshot.sns --report            # optional markdown report
 
 Outputs (into --output dir):
-    tree.txt             hierarchical file/dir tree with sizes (--tree PATH)
+    tree.txt             hierarchical text tree with sizes (--tree PATH)
+    tree.md              Markdown nested-list tree (--tree-md PATH)
     report.md            optional human-readable report (--report)
     top_files.csv        largest N files
     extensions.csv       extension histogram
@@ -102,7 +104,7 @@ class Snapshot:
         self.disc = []               # (full path, own, childsum) where own != childsum
         self.ext = {}                # ext -> [count, size]
         self.noext = [0, 0]
-        self.heap = []               # top files: (-log-size, seq, path, disk) via heapq
+        self.heap = []               # top files: (log, seq, path, disk) via heapq
         self.heap_cap = 600
         self.subtrees = []           # (root_label, [(path, log, disk, isdir)]) when requested
 
@@ -111,6 +113,8 @@ class Snapshot:
         """Read node header+name at pos. Returns (type_bytes, name, name_end, pos_after_name)."""
         t = self.data[pos:pos + 2]
         nlen = int.from_bytes(self.data[pos + 2:pos + 6], 'little')
+        if nlen < 2 or pos + 6 + nlen + FIXED > self.N:
+            raise ValueError(f'bad name length {nlen} at offset {pos}')
         name = sanitize(decode_name(self.data[pos + 6:pos + 6 + nlen]))
         return t, name, pos + 6 + nlen
 
@@ -180,8 +184,6 @@ class Snapshot:
                         self.dir_children.setdefault(pk, []).append((name, log, disk, False))
                 if dstack:
                     dstack[-1][2] += log
-                if sub_roots:  # record all nodes under subtree roots (dirs handled below)
-                    pass
                 if in_subtree(full):
                     self.subtrees.append((full, log, disk, False))
                 pos = name_end + FIXED + 2
@@ -216,8 +218,6 @@ class Snapshot:
                 self.big_dirs.add(norm_path(path_parts))
             if in_subtree(full):
                 self.subtrees.append((full, log, disk, True))
-            if dstack and len(dstack) > 1:
-                pass  # children sum is accumulated when the child finishes
             self.max_depth = max(self.max_depth, len(path_parts))
             pos = name_end + FIXED
 
@@ -231,10 +231,9 @@ class Snapshot:
 # --- report rendering (zh / en) -------------------------------------------
 
 
-def fmt_size(b, zh=False):
-    gb = 'GiB'
+def fmt_size(b):
     if b >= 1024 ** 3:
-        return f'{b / 1024 ** 3:,.2f} {gb}'
+        return f'{b / 1024 ** 3:,.2f} GiB'
     if b >= 1024 ** 2:
         return f'{b / 1024 ** 2:,.1f} MiB'
     if b >= 1024:
@@ -249,7 +248,6 @@ def render(snap, lang='zh', topn=50):
     used = snap.root_log - (snap.free_log or 0)
     root_path = norm_path([snap.root_name or 'C:'])
     root_delta = next((own - csum for p, own, csum in snap.disc if p == root_path), 0)
-    rule = '---'
     if lang == 'zh':
         A(f'# C 盘空间分析报告（SpaceSniffer 快照）\n')
         A('> 来源：`%s`（%d 字节）。大小默认指逻辑大小（文件字节数 / 目录递归合计）；占比相对整盘容量。'
@@ -338,7 +336,7 @@ def render(snap, lang='zh', topn=50):
 # --- tree rendering --------------------------------------------------------
 
 
-def render_tree(snap, min_bytes, max_depth=0, dirs_only=False, max_nodes=0, lang='zh'):
+def render_tree(snap, min_bytes, max_depth=0, dirs_only=False, max_nodes=0):
     """Hierarchical text tree. Dirs >= min_bytes are expanded (children were
     recorded during parse); entries below min_bytes are collapsed into one line.
     max_nodes caps total emitted nodes (largest-first), e.g. for LLM contexts."""

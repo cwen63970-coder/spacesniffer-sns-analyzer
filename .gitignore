@@ -7,7 +7,6 @@ out/
 out_*/
 report/
 *.csv
-!examples/*.csv
 
 # python
 __pycache__/
