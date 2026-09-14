@@ -1,0 +1,16 @@
+# snapshots may contain personal file paths - never commit them
+*.sns
+*.dmp
+
+# analyzer outputs
+out/
+out_*/
+report/
+*.csv
+!examples/*.csv
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
