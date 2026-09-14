@@ -17,11 +17,17 @@
 # 1) 生成一个合成示例（无需真实快照即可试用）
 python make_example.py example.sns
 
-# 2) 分析示例
-python sns_analyze.py example.sns --output out --lang zh
+# 2) 导出文件树（主功能）
+python sns_analyze.py example.sns --tree tree.txt --min 1
 
 # 3) 分析你自己的快照（SpaceSniffer 中 File → Export 得到 .sns）
-python sns_analyze.py "D:\scan\C_drive.sns" --output report --lang zh --top 1000 --json
+python sns_analyze.py "D:\scan\C_drive.sns" -o report --tree 文件树.txt --depth 8 --min 128 --json
+
+# 4) 只要目录结构、不要文件行
+python sns_analyze.py "D:\scan\C_drive.sns" -o report --tree tree_dirs.txt --dirs-only
+
+# 5) 可选：生成 Markdown 报告
+python sns_analyze.py "D:\scan\C_drive.sns" -o report --report
 ```
 
 ### 参数
@@ -30,9 +36,13 @@ python sns_analyze.py "D:\scan\C_drive.sns" --output report --lang zh --top 1000
 |---|---|---|
 | `input` | 必填 | `.sns` 快照路径 |
 | `--output, -o` | `.` | 输出目录 |
+| `--tree PATH` | 无 | **导出层级文件树**（目录/文件带大小，`├──/└──` 连线） |
+| `--depth N` | 0 | 树的最大深度（0 = 不限） |
+| `--min N` | 128 | ≥ N MiB 的目录才展开（树与 `dirs.csv` 都受此控制）；更小的目录折叠为一行，文件 < N MiB 不显示 |
+| `--dirs-only` | 关 | 树中不显示文件行（目录大小仍保留） |
 | `--top` | 600 | 保留最大的 N 个文件 |
-| `--big-min` | 256 | 记录 ≥ N MiB 的目录的直接子项（供下钻/`dirs.csv`） |
-| `--subtree` | 无 | 分号分隔的路径前缀，导出完整子树，如 `"C:\$Recycle.Bin;D:\Games"` |
+| `--subtree` | 无 | 分号分隔的路径前缀，导出完整子树 CSV，如 `"C:\$Recycle.Bin;D:\Games"` |
+| `--report` | 关 | 额外生成 Markdown 报告（`report.md`） |
 | `--lang` | `zh` | 报告语言 `zh` / `en` |
 | `--json` | 关 | 额外输出 `summary.json` |
 
@@ -40,12 +50,13 @@ python sns_analyze.py "D:\scan\C_drive.sns" --output report --lang zh --top 1000
 
 | 文件 | 内容 |
 |---|---|
-| `report.md` | 主报告：总览、一级目录、目录一致性校验、扩展名排行、最大文件、子树清单 |
+| `tree.txt` | **层级文件树**：`├──/└──` 分支、目录以 `/` 结尾、每项带逻辑大小；根行含容量/已用/空闲 |
+| `dirs.csv` | ≥ `--min` MiB 的目录及其直接子项（可自行透视） |
 | `top_files.csv` | 最大的 N 个文件（逻辑大小 / 磁盘占用 / 完整路径） |
 | `extensions.csv` | 扩展名统计（数量 + 大小） |
-| `dirs.csv` | 大目录（≥ `--big-min`）的直接子项，可自行做下钻透视 |
 | `subtree_*.csv` | `--subtree` 指定的完整子树清单 |
-| `summary.json` | 聚合数字（容量/空闲/已用/文件数/目录数/一级目录） |
+| `report.md` | 可选（`--report`）：总览、一级目录、一致性校验、扩展名、最大文件 |
+| `summary.json` | 可选（`--json`）：聚合数字 |
 
 ---
 
@@ -103,15 +114,15 @@ node  = 类型(2B) + 名字长度(4B) + base64名字 + 定长(46B) + [目录: �
 ## English
 
 `sns_analyze.py` parses SpaceSniffer `.sns` binary snapshots (undocumented format,
-reverse-engineered and field-verified here) and emits a Markdown report plus CSV/JSON
-exports: capacity/free/used, top-level breakdown, per-directory consistency check,
-extension histogram, largest files, and full subtree dumps for chosen prefixes.
-Stdlib-only, Python 3.8+. See the command-line table above; `--lang en` switches the
-report to English.
+reverse-engineered and field-verified here). The primary export is a
+**hierarchical file tree** (`--tree tree.txt`) with branch characters and sizes;
+CSV/JSON exports (top files, extensions, per-directory children, optional full
+subtrees and Markdown report) are also available. Stdlib-only, Python 3.8+.
 
 ```bash
 python make_example.py example.sns
-python sns_analyze.py example.sns -o out --lang en
+python sns_analyze.py example.sns -o out --tree tree.txt --min 1
+python sns_analyze.py example.sns -o out --report --lang en
 ```
 
 ## 参考

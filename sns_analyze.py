@@ -18,16 +18,17 @@ Verified record layout (little-endian):
     root record size = drive CAPACITY; footer 'Free Space' record = free bytes.
 
 Usage:
-    python sns_analyze.py snapshot.sns [--output DIR] [--top N] [--big-min MIB]
-                          [--subtree "PATH1;PATH2"] [--lang zh|en] [--json]
+    python sns_analyze.py snapshot.sns --tree tree.txt --depth 8 --min 128
+    python sns_analyze.py snapshot.sns --dirs-only --tree tree.txt --json
+    python sns_analyze.py snapshot.sns --report            # optional markdown report
 
 Outputs (into --output dir):
-    report.md            human-readable analysis report (English or Chinese)
+    tree.txt             hierarchical file/dir tree with sizes (--tree PATH)
+    report.md            optional human-readable report (--report)
     top_files.csv        largest N files
     extensions.csv       extension histogram
-    dirs.csv             children of 'big' directories (> = --big-min MiB)
-    summary.json         aggregate numbers
-    subtree_<x>.csv      full subtree listing for each --subtree path
+    dirs.csv             children of 'big' directories (>= --min MiB)
+    summary.json         aggregate numbers (--json)
 
 No third-party dependencies (Python 3.8+).
 """
@@ -78,9 +79,9 @@ def norm_path(parts):
 
 
 class Snapshot:
-    def __init__(self, path, big_min_mib=256.0):
+    def __init__(self, path, min_mib=256.0):
         self.path = path
-        self.big_min = int(big_min_mib * 1024 * 1024)
+        self.min_bytes = int(min_mib * 1024 * 1024)
         self.data = open(path, 'rb').read()
         self.N = len(self.data)
         # stats
@@ -211,7 +212,7 @@ class Snapshot:
             path_parts.append(name)
             open_dirs += 1
             dstack.append([name, log, 0])
-            if log >= self.big_min:
+            if log >= self.min_bytes:
                 self.big_dirs.add(norm_path(path_parts))
             if in_subtree(full):
                 self.subtrees.append((full, log, disk, True))
@@ -334,6 +335,43 @@ def render(snap, lang='zh', topn=50):
     return '\n'.join(L)
 
 
+# --- tree rendering --------------------------------------------------------
+
+
+def render_tree(snap, min_bytes, max_depth=0, dirs_only=False, lang='zh'):
+    """Hierarchical text tree. Dirs >= min_bytes are expanded (children were
+    recorded during parse); entries below min_bytes are collapsed into one line."""
+    L = []
+    root_path = norm_path([snap.root_name or 'C:'])
+    used = snap.root_log - (snap.free_log or 0)
+    L.append(f'{snap.root_name or "C:\\"}  [总容量 {fmt_size(snap.root_log)}'
+             f' | 已用 {fmt_size(used)} | 空闲 {fmt_size(snap.free_log or 0)}]')
+
+    def walk(path, name, log, isdir, depth, is_last, prefix):
+        branch = '└── ' if is_last else '├── '
+        child_prefix = prefix + ('    ' if is_last else '│   ')
+        if not isdir:
+            if dirs_only or log < min_bytes:
+                return
+            L.append(f'{prefix}{branch}{name}  [{fmt_size(log)}]')
+            return
+        # directory
+        if depth > 0:
+            L.append(f'{prefix}{branch}{name}  [{fmt_size(log)}]/')
+        if max_depth and depth >= max_depth:
+            return
+        if log < min_bytes:           # children not recorded for small dirs
+            return
+        kids = sorted(snap.dir_children.get(path, []), key=lambda x: (-x[1], x[0]))
+        for i, (n, l, dk, k) in enumerate(kids):
+            walk(path + '\\' + n, n, l, k, depth + 1, i == len(kids) - 1, child_prefix)
+
+    kids = sorted(snap.top_level, key=lambda x: (-x[1], x[0]))
+    for i, (n, l, dk, k) in enumerate(kids):
+        walk(root_path + '\\' + n, n, l, k, 1, i == len(kids) - 1, '')
+    return '\n'.join(L)
+
+
 # --- CLI -------------------------------------------------------------------
 
 
@@ -343,8 +381,16 @@ def main():
     ap.add_argument('input', help='path to the .sns snapshot file')
     ap.add_argument('--output', '-o', default='.', help='output directory (default: cwd)')
     ap.add_argument('--top', type=int, default=600, help='keep top N files (default 600)')
-    ap.add_argument('--big-min', type=float, default=256.0,
-                    help='record children of dirs >= N MiB for drill-down (default 256)')
+    ap.add_argument('--min', type=float, default=128.0,
+                    help='dirs >= N MiB are expanded in the tree and listed in dirs.csv (default 128)')
+    ap.add_argument('--tree', default=None, metavar='PATH',
+                    help='write a hierarchical text tree (with sizes) to PATH')
+    ap.add_argument('--depth', type=int, default=0,
+                    help='max tree depth from the drive root (0 = unlimited)')
+    ap.add_argument('--dirs-only', action='store_true',
+                    help='omit file lines from the tree')
+    ap.add_argument('--report', action='store_true',
+                    help='also write the Markdown report (report.md)')
     ap.add_argument('--subtree', default=None,
                     help='semicolon-separated path prefixes to fully list, e.g. "C:\\$Recycle.Bin;C:\\ProgramData\\NVIDIA Corporation"')
     ap.add_argument('--lang', choices=['zh', 'en'], default='zh', help='report language (default zh)')
@@ -357,7 +403,7 @@ def main():
 
     t0 = time.time()
     try:
-        snap = Snapshot(args.input, big_min_mib=args.big_min).parse(
+        snap = Snapshot(args.input, min_mib=args.min).parse(
             top_files=args.top,
             subtrees=[s.strip() for s in args.subtree.split(';')] if args.subtree else None)
     except ValueError as e:
@@ -369,11 +415,19 @@ def main():
     print(f'  capacity={fmt_size(snap.root_log)}  free={fmt_size(snap.free_log)}  used={fmt_size(used)}')
     print(f'  sum(file sizes)={fmt_size(snap.sum_file_log)}  delta vs used={fmt_size(snap.sum_file_log - used)}')
     bad = [d for d in snap.disc if d[0] != snap.root_name.rstrip('\\')]
-    print(f'  directory consistency: {"OK" if not bad else str(len(bad)) + " discrepancies (see report)"}')
+    print(f'  directory consistency: {"OK" if not bad else str(len(bad)) + " discrepancies"}')
 
-    base = os.path.join(args.output, 'report.md')
-    open(base, 'w', encoding='utf-8').write(render(snap, lang=args.lang))
-    print(f'  wrote {base}')
+    if args.tree:
+        tree = render_tree(snap, snap.min_bytes, args.depth, args.dirs_only, args.lang)
+        tp = args.tree if os.path.isabs(args.tree) else os.path.join(args.output, args.tree)
+        with open(tp, 'w', encoding='utf-8') as fh:
+            fh.write(tree + '\n')
+        print(f'  wrote tree ({len(tree.splitlines()):,} lines) -> {tp}')
+
+    if args.report:
+        base = os.path.join(args.output, 'report.md')
+        open(base, 'w', encoding='utf-8').write(render(snap, lang=args.lang))
+        print(f'  wrote {base}')
 
     def csvw(name, header, rows):
         p = os.path.join(args.output, name)
