@@ -338,16 +338,21 @@ def render(snap, lang='zh', topn=50):
 # --- tree rendering --------------------------------------------------------
 
 
-def render_tree(snap, min_bytes, max_depth=0, dirs_only=False, lang='zh'):
+def render_tree(snap, min_bytes, max_depth=0, dirs_only=False, max_nodes=0, lang='zh'):
     """Hierarchical text tree. Dirs >= min_bytes are expanded (children were
-    recorded during parse); entries below min_bytes are collapsed into one line."""
+    recorded during parse); entries below min_bytes are collapsed into one line.
+    max_nodes caps total emitted nodes (largest-first), e.g. for LLM contexts."""
     L = []
     root_path = norm_path([snap.root_name or 'C:'])
     used = snap.root_log - (snap.free_log or 0)
     L.append(f'{snap.root_name or "C:\\"}  [总容量 {fmt_size(snap.root_log)}'
              f' | 已用 {fmt_size(used)} | 空闲 {fmt_size(snap.free_log or 0)}]')
+    counter = [0]
 
     def walk(path, name, log, isdir, depth, is_last, prefix):
+        if max_nodes and counter[0] >= max_nodes:
+            return
+        counter[0] += 1
         branch = '└── ' if is_last else '├── '
         child_prefix = prefix + ('    ' if is_last else '│   ')
         if not isdir:
@@ -372,6 +377,78 @@ def render_tree(snap, min_bytes, max_depth=0, dirs_only=False, lang='zh'):
     return '\n'.join(L)
 
 
+def render_tree_json(snap, min_bytes, max_depth=0, dirs_only=False, max_nodes=0):
+    """Nested JSON tree (LLM/script friendly). Each node has name, size (bytes),
+    size_h (human), type; children are sorted largest-first.
+    max_nodes caps total nodes to keep the file small enough for LLM contexts."""
+    root_path = norm_path([snap.root_name or 'C:'])
+    used = snap.root_log - (snap.free_log or 0)
+    counter = [0]
+
+    def node(name, log, isdir, path, depth):
+        if max_nodes and counter[0] >= max_nodes:
+            return None
+        counter[0] += 1
+        n = {'name': name, 'size': log, 'size_h': fmt_size(log),
+             'type': 'dir' if isdir else 'file'}
+        if isdir:
+            n['children'] = []
+            if (not max_depth or depth < max_depth) and (depth == 0 or log >= min_bytes):
+                kids = (snap.top_level if depth == 0
+                        else snap.dir_children.get(path, []))
+                for kname, klog, kdisk, kdir in sorted(kids, key=lambda x: (-x[1], x[0])):
+                    if not kdir and (dirs_only or klog < min_bytes):
+                        continue
+                    ch = node(kname, klog, kdir, path + '\\' + kname, depth + 1)
+                    if ch is not None:
+                        n['children'].append(ch)
+        return n
+
+    return {
+        'drive': snap.root_name or 'C:\\',
+        'capacity': snap.root_log,
+        'free': snap.free_log or 0,
+        'used': used,
+        'files': snap.n_files,
+        'dirs': snap.n_dirs,
+        'tree': node(snap.root_name or 'C:\\', snap.root_log, True, root_path, 0),
+    }
+
+
+def render_tree_md(snap, min_bytes, max_depth=0, dirs_only=False, max_nodes=0):
+    """Markdown nested-list tree: easy to paste into chat/LLM tools."""
+    L = ['# 磁盘文件树（按大小排序，最大在前）', '']
+    root_path = norm_path([snap.root_name or 'C:'])
+    used = snap.root_log - (snap.free_log or 0)
+    L.append(f'- 根: `{snap.root_name or "C:\\"}` 容量 {fmt_size(snap.root_log)} · '
+             f'已用 {fmt_size(used)} · 空闲 {fmt_size(snap.free_log or 0)}')
+    counter = [0]
+
+    def walk(path, name, log, isdir, depth):
+        if max_nodes and counter[0] >= max_nodes:
+            return
+        counter[0] += 1
+        indent = '  ' * depth
+        if isdir:
+            L.append(f'{indent}- 📁 `{name}` **{fmt_size(log)}**')
+            if (max_depth and depth >= max_depth) or (depth > 0 and log < min_bytes):
+                return
+            kids = (snap.top_level if depth == 0
+                    else snap.dir_children.get(path, []))
+            for kname, klog, kdisk, kdir in sorted(kids, key=lambda x: (-x[1], x[0])):
+                if not kdir and (dirs_only or klog < min_bytes):
+                    continue
+                walk(path + '\\' + kname, kname, klog, kdir, depth + 1)
+        else:
+            if not dirs_only and log >= min_bytes:
+                L.append(f'{indent}- 📄 `{name}` {fmt_size(log)}')
+
+    kids = sorted(snap.top_level, key=lambda x: (-x[1], x[0]))
+    for n, l, dk, k in kids:
+        walk(root_path + '\\' + n, n, l, k, 1)
+    return '\n'.join(L)
+
+
 # --- CLI -------------------------------------------------------------------
 
 
@@ -385,8 +462,15 @@ def main():
                     help='dirs >= N MiB are expanded in the tree and listed in dirs.csv (default 128)')
     ap.add_argument('--tree', default=None, metavar='PATH',
                     help='write a hierarchical text tree (with sizes) to PATH')
+    ap.add_argument('--tree-json', default=None, metavar='PATH',
+                    help='write a nested JSON tree (LLM/script friendly) to PATH')
+    ap.add_argument('--tree-md', default=None, metavar='PATH',
+                    help='write a Markdown nested-list tree to PATH')
     ap.add_argument('--depth', type=int, default=0,
                     help='max tree depth from the drive root (0 = unlimited)')
+    ap.add_argument('--max-nodes', type=int, default=0,
+                    help='cap emitted tree nodes (largest-first); keeps output small '
+                         'enough for LLM context windows (0 = unlimited)')
     ap.add_argument('--dirs-only', action='store_true',
                     help='omit file lines from the tree')
     ap.add_argument('--report', action='store_true',
@@ -417,12 +501,30 @@ def main():
     bad = [d for d in snap.disc if d[0] != snap.root_name.rstrip('\\')]
     print(f'  directory consistency: {"OK" if not bad else str(len(bad)) + " discrepancies"}')
 
+    def out_path(p):
+        return p if os.path.isabs(p) else os.path.join(args.output, p)
+
+    common = (snap.min_bytes, args.depth, args.dirs_only, args.max_nodes)
     if args.tree:
-        tree = render_tree(snap, snap.min_bytes, args.depth, args.dirs_only, args.lang)
-        tp = args.tree if os.path.isabs(args.tree) else os.path.join(args.output, args.tree)
+        tree = render_tree(snap, *common)
+        tp = out_path(args.tree)
         with open(tp, 'w', encoding='utf-8') as fh:
             fh.write(tree + '\n')
         print(f'  wrote tree ({len(tree.splitlines()):,} lines) -> {tp}')
+
+    if args.tree_json:
+        tj = json.dumps(render_tree_json(snap, *common), ensure_ascii=False, indent=1)
+        tp = out_path(args.tree_json)
+        with open(tp, 'w', encoding='utf-8') as fh:
+            fh.write(tj)
+        print(f'  wrote tree-json ({len(tj.splitlines()):,} lines) -> {tp}')
+
+    if args.tree_md:
+        tm = render_tree_md(snap, *common)
+        tp = out_path(args.tree_md)
+        with open(tp, 'w', encoding='utf-8') as fh:
+            fh.write(tm + '\n')
+        print(f'  wrote tree-md ({len(tm.splitlines()):,} lines) -> {tp}')
 
     if args.report:
         base = os.path.join(args.output, 'report.md')

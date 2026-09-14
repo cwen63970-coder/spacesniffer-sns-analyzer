@@ -23,10 +23,14 @@ python sns_analyze.py example.sns --tree tree.txt --min 1
 # 3) 分析你自己的快照（SpaceSniffer 中 File → Export 得到 .sns）
 python sns_analyze.py "D:\scan\C_drive.sns" -o report --tree 文件树.txt --depth 8 --min 128 --json
 
-# 4) 只要目录结构、不要文件行
+# 4) 导出 JSON / Markdown 树，直接投喂大模型（用 --max-nodes 控制规模）
+python sns_analyze.py "D:\scan\C_drive.sns" -o report --tree-json tree.json --max-nodes 2500
+python sns_analyze.py "D:\scan\C_drive.sns" -o report --tree-md tree.md --max-nodes 2500
+
+# 5) 只要目录结构、不要文件行
 python sns_analyze.py "D:\scan\C_drive.sns" -o report --tree tree_dirs.txt --dirs-only
 
-# 5) 可选：生成 Markdown 报告
+# 6) 可选：生成 Markdown 报告
 python sns_analyze.py "D:\scan\C_drive.sns" -o report --report
 ```
 
@@ -36,8 +40,11 @@ python sns_analyze.py "D:\scan\C_drive.sns" -o report --report
 |---|---|---|
 | `input` | 必填 | `.sns` 快照路径 |
 | `--output, -o` | `.` | 输出目录 |
-| `--tree PATH` | 无 | **导出层级文件树**（目录/文件带大小，`├──/└──` 连线） |
+| `--tree PATH` | 无 | **导出层级文本树**（`├──/└──` 连线，目录带 `/` 和大小） |
+| `--tree-json PATH` | 无 | **嵌套 JSON 树**（`name/size/size_h/type/children`，大模型友好） |
+| `--tree-md PATH` | 无 | **Markdown 嵌套列表树**（`- 📁`，可直接粘贴进聊天工具） |
 | `--depth N` | 0 | 树的最大深度（0 = 不限） |
+| `--max-nodes N` | 0 | 树节点总数上限（按大小优先保留，防止输出超出大模型上下文，0 = 不限） |
 | `--min N` | 128 | ≥ N MiB 的目录才展开（树与 `dirs.csv` 都受此控制）；更小的目录折叠为一行，文件 < N MiB 不显示 |
 | `--dirs-only` | 关 | 树中不显示文件行（目录大小仍保留） |
 | `--top` | 600 | 保留最大的 N 个文件 |
@@ -50,7 +57,9 @@ python sns_analyze.py "D:\scan\C_drive.sns" -o report --report
 
 | 文件 | 内容 |
 |---|---|
-| `tree.txt` | **层级文件树**：`├──/└──` 分支、目录以 `/` 结尾、每项带逻辑大小；根行含容量/已用/空闲 |
+| `tree.txt` | 层级文本树：分支连线、目录以 `/` 结尾、每项带逻辑大小；根行含容量/已用/空闲 |
+| `tree.json` | 嵌套 JSON 树：每个节点 `name` / `size`(字节) / `size_h`(人类可读) / `type` / `children`，子项按大小降序 |
+| `tree.md` | Markdown 嵌套列表树，`📁`/`📄` 图标 + 大小，可直接粘贴给 AI 工具 |
 | `dirs.csv` | ≥ `--min` MiB 的目录及其直接子项（可自行透视） |
 | `top_files.csv` | 最大的 N 个文件（逻辑大小 / 磁盘占用 / 完整路径） |
 | `extensions.csv` | 扩展名统计（数量 + 大小） |
@@ -115,13 +124,16 @@ node  = 类型(2B) + 名字长度(4B) + base64名字 + 定长(46B) + [目录: �
 
 `sns_analyze.py` parses SpaceSniffer `.sns` binary snapshots (undocumented format,
 reverse-engineered and field-verified here). The primary export is a
-**hierarchical file tree** (`--tree tree.txt`) with branch characters and sizes;
-CSV/JSON exports (top files, extensions, per-directory children, optional full
-subtrees and Markdown report) are also available. Stdlib-only, Python 3.8+.
+**hierarchical file tree** — plain text (`--tree`), nested **JSON** (`--tree-json`,
+with `name/size/size_h/type/children` per node) or **Markdown** (`--tree-md`) for
+feeding directly to LLM tools; `--max-nodes` caps node count to fit context
+windows. CSV/JSON exports (top files, extensions, per-directory children, optional
+full subtrees and Markdown report) are also available. Stdlib-only, Python 3.8+.
 
 ```bash
 python make_example.py example.sns
 python sns_analyze.py example.sns -o out --tree tree.txt --min 1
+python sns_analyze.py example.sns -o out --tree-json tree.json --max-nodes 500
 python sns_analyze.py example.sns -o out --report --lang en
 ```
 
